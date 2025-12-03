@@ -1,139 +1,265 @@
-"""
-סקריפט להמרת קבצי HTML (מקבלות/חשבוניות) לפורמט Excel
-"""
-
+import re
+from datetime import datetime
 from bs4 import BeautifulSoup
 import pandas as pd
-import sys
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+import io
 
-def html_to_excel(html_file_path, output_excel_path='cafe_data.xlsx'):
+def parse_html_transactions(html_content):
     """
-    ממיר קובץ HTML עם טבלאות div לקובץ Excel
-    
-    Args:
-        html_file_path: נתיב לקובץ HTML
-        output_excel_path: נתיב לקובץ Excel פלט
+    Parse transaction details from HTML
+    Returns list of transactions with their details
     """
-    
-    print(f"קורא קובץ: {html_file_path}")
-    
-    # קריאת הקובץ
-    with open(html_file_path, 'r', encoding='utf-8') as f:
-        html_content = f.read()
-    
     soup = BeautifulSoup(html_content, 'html.parser')
     
-    # מציאת כל טבלאות ה-div
-    table_divs = soup.find_all('div', class_='table')
+    transactions = []
     
-    print(f"נמצאו {len(table_divs)} טבלאות")
+    # Find all data blocks (each block = one transaction)
+    data_blocks = soup.find_all('div', class_='data-block')
     
-    if len(table_divs) == 0:
-        print("❌ לא נמצאו טבלאות בקובץ!")
-        return
-    
-    all_rows = []
-    
-    for table_num, table_div in enumerate(table_divs, 1):
-        print(f"מעבד טבלה {table_num}...")
-        
-        # חילוץ כותרות
-        headers = []
-        header_div = table_div.find('div', class_='table-header item-header')
-        
-        if header_div:
-            # כותרות טקסט
-            text_headers = header_div.find_all('div', class_='text')
-            for h in text_headers:
-                headers.append(h.get_text(strip=True))
+    for block in data_blocks:
+        # Extract transaction header
+        trans_header = block.find('div', class_='trans-header')
+        if not trans_header:
+            continue
             
-            # כותרות מספריות
-            num_headers = header_div.find_all('div', class_='num')
-            for h in num_headers:
-                headers.append(h.get_text(strip=True))
+        # Get transaction details from header
+        header_items = trans_header.find_all('span', class_='header-num')
         
-        # אם אין כותרות, השתמש בכותרות ברירת מחדל
-        if not headers:
-            headers = ['פריט', 'תאור', 'כמות', 'סכום', 'סכום כולל מעמ']
+        if len(header_items) < 4:
+            continue
         
-        # חילוץ שורות
-        item_rows = table_div.find_all('div', class_='item-row')
+        order_id = header_items[0].get_text(strip=True)
+        invoice_num = header_items[1].get_text(strip=True)
+        transaction_type = header_items[2].get_text(strip=True)
+        register_num = header_items[3].get_text(strip=True)
+        datetime_str = header_items[4].get_text(strip=True)
         
-        for row in item_rows:
-            row_data = []
+        # Parse date and time
+        try:
+            trans_datetime = datetime.strptime(datetime_str, '%d/%m/%Y %H:%M')
+            trans_date = trans_datetime.date()
+            trans_time = trans_datetime.time()
+        except:
+            continue
+        
+        # Get items
+        items = []
+        item_rows = block.find_all('div', class_='item-row')
+        
+        total_amount = 0
+        
+        for item_row in item_rows:
+            # Skip tender and totals rows
+            if 'tender-row' in item_row.get('class', []) or 'totals-row' in item_row.get('class', []):
+                continue
             
-            # עמודות טקסט
-            text_cols = row.find_all('div', class_='text')
-            for col in text_cols:
-                row_data.append(col.get_text(strip=True))
+            # Get item description
+            item_name = item_row.find('span')
+            if not item_name:
+                continue
+            item_name = item_name.get_text(strip=True)
             
-            # עמודות מספריות
-            num_cols = row.find_all('div', class_='num')
-            for col in num_cols:
-                text = col.get_text(strip=True)
-                # ניסיון להמיר למספר
+            # Get prices from num elements
+            num_elements = item_row.find_all('div', class_='num')
+            
+            if len(num_elements) >= 4:
                 try:
-                    # הסרת פסיקים וסימנים מיוחדים
-                    clean_text = text.replace(',', '').replace('₪', '').strip()
-                    if clean_text:
-                        row_data.append(float(clean_text))
-                    else:
-                        row_data.append(text)
+                    quantity = float(num_elements[0].get_text(strip=True))
+                    unit_price = float(num_elements[1].get_text(strip=True))
+                    taxable_price = float(num_elements[2].get_text(strip=True))
+                    total_price = float(num_elements[3].get_text(strip=True))
+                    
+                    items.append({
+                        'name': item_name,
+                        'quantity': quantity,
+                        'unit_price': unit_price,
+                        'taxable_price': taxable_price,
+                        'total_price': total_price
+                    })
+                    
+                    total_amount += total_price
+                except (ValueError, IndexError):
+                    continue
+        
+        # Get total from totals row
+        totals_row = block.find('div', class_='totals-row')
+        if totals_row:
+            total_nums = totals_row.find_all('span', class_='tender-num')
+            if len(total_nums) >= 3:
+                try:
+                    total_amount = float(total_nums[2].get_text(strip=True))
                 except:
-                    row_data.append(text)
+                    pass
+        
+        # Skip transactions with total = 0 (cancelled transactions)
+        if total_amount == 0:
+            continue
+        
+        transactions.append({
+            'order_id': order_id,
+            'invoice_num': invoice_num,
+            'date': trans_date,
+            'time': trans_time,
+            'items': items,
+            'total': total_amount
+        })
+    
+    return transactions
+
+def create_daily_summary(transactions):
+    """
+    Summarize transactions by date
+    Returns dataframe with daily sales summary
+    """
+    daily_data = {}
+    
+    for trans in transactions:
+        trans_date = trans['date']
+        total = trans['total']
+        
+        if trans_date not in daily_data:
+            daily_data[trans_date] = {
+                'date': trans_date,
+                'total_sales': 0,
+                'transaction_count': 0,
+                'items_count': 0
+            }
+        
+        daily_data[trans_date]['total_sales'] += total
+        daily_data[trans_date]['transaction_count'] += 1
+        daily_data[trans_date]['items_count'] += len(trans['items'])
+    
+    # Convert to dataframe
+    daily_df = pd.DataFrame(list(daily_data.values()))
+    daily_df = daily_df.sort_values('date')
+    
+    return daily_df
+
+def create_detailed_transactions_df(transactions):
+    """
+    Create detailed transactions dataframe (one row per transaction)
+    """
+    records = []
+    
+    for trans in transactions:
+        records.append({
+            'Order ID': trans['order_id'],
+            'Invoice': trans['invoice_num'],
+            'Date': trans['date'],
+            'Time': trans['time'],
+            'Item Count': len(trans['items']),
+            'Total Amount': trans['total']
+        })
+    
+    return pd.DataFrame(records)
+
+def create_items_summary_df(transactions):
+    """
+    Create item-level summary (aggregated by item name)
+    """
+    items_data = {}
+    
+    for trans in transactions:
+        for item in trans['items']:
+            item_name = item['name']
             
-            if row_data:
-                all_rows.append(row_data)
+            if item_name not in items_data:
+                items_data[item_name] = {
+                    'item_name': item_name,
+                    'quantity': 0,
+                    'total_amount': 0,
+                    'transaction_count': 0
+                }
+            
+            items_data[item_name]['quantity'] += item['quantity']
+            items_data[item_name]['total_amount'] += item['total_price']
+            items_data[item_name]['transaction_count'] += 1
     
-    # יצירת DataFrame
-    if all_rows:
-        # וידוא שכל השורות באותו אורך
-        max_cols = max(len(row) for row in all_rows)
-        
-        # השלמת שורות קצרות עם None
-        for row in all_rows:
-            while len(row) < max_cols:
-                row.append(None)
-        
-        # וידוא שהכותרות באותו אורך
-        while len(headers) < max_cols:
-            headers.append(f'עמודה_{len(headers)+1}')
-        
-        df = pd.DataFrame(all_rows, columns=headers[:max_cols])
-        
-        # הוספת עמודות מחושבות נוספות
-        if 'סכום כולל מעמ' in df.columns and 'כמות' in df.columns:
-            # חישוב מחיר למנה
-            df['מחיר למנה'] = df['סכום כולל מעמ'] / df['כמות'].replace(0, 1)
-            df['מחיר למנה'] = df['מחיר למנה'].round(2)
-        
-        # שמירה ל-Excel
-        df.to_excel(output_excel_path, index=False, engine='openpyxl')
-        
-        print(f"\n✅ הקובץ נשמר בהצלחה!")
-        print(f"📁 נתיב: {output_excel_path}")
-        print(f"📊 מספר שורות: {len(df)}")
-        print(f"📊 מספר עמודות: {len(df.columns)}")
-        print(f"\nעמודות בקובץ: {', '.join(df.columns)}")
-        
-        # הצגת דוגמה
-        print("\n🔍 דוגמה מהנתונים (5 שורות ראשונות):")
-        print(df.head())
-        
-        return df
-    else:
-        print("❌ לא נמצאו נתונים לייצא!")
-        return None
-
-
-if __name__ == "__main__":
-    # בדיקה אם הועבר נתיב קובץ
-    if len(sys.argv) > 1:
-        html_file = sys.argv[1]
-        output_file = sys.argv[2] if len(sys.argv) > 2 else 'cafe_data.xlsx'
-    else:
-        # דוגמה לשימוש
-        html_file = input("הכנס נתיב לקובץ HTML: ")
-        output_file = input("הכנס נתיב לקובץ פלט (Enter לברירת מחדל 'cafe_data.xlsx'): ") or 'cafe_data.xlsx'
+    items_df = pd.DataFrame(list(items_data.values()))
+    items_df = items_df.sort_values('total_amount', ascending=False)
     
-    html_to_excel(html_file, output_file)
+    return items_df
+
+def export_to_excel(transactions, filepath):
+    """
+    Export all data to Excel file with multiple sheets
+    """
+    wb = Workbook()
+    
+    # Daily Summary Sheet
+    daily_df = create_daily_summary(transactions)
+    ws_daily = wb.active
+    ws_daily.title = "Daily Summary"
+    
+    # Add headers
+    headers = ['Date', 'Total Sales', 'Transaction Count', 'Items Count']
+    for col_idx, header in enumerate(headers, 1):
+        ws_daily.cell(row=1, column=col_idx, value=header)
+        ws_daily.cell(row=1, column=col_idx).font = Font(bold=True)
+        ws_daily.cell(row=1, column=col_idx).fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        ws_daily.cell(row=1, column=col_idx).font = Font(bold=True, color="FFFFFF")
+    
+    # Add data
+    for row_idx, row in enumerate(daily_df.values, 2):
+        ws_daily.cell(row=row_idx, column=1, value=row[0])  # date
+        ws_daily.cell(row=row_idx, column=2, value=row[1])  # total_sales
+        ws_daily.cell(row=row_idx, column=3, value=row[2])  # transaction_count
+        ws_daily.cell(row=row_idx, column=4, value=row[3])  # items_count
+    
+    ws_daily.column_dimensions['A'].width = 15
+    ws_daily.column_dimensions['B'].width = 15
+    ws_daily.column_dimensions['C'].width = 18
+    ws_daily.column_dimensions['D'].width = 15
+    
+    # Detailed Transactions Sheet
+    trans_df = create_detailed_transactions_df(transactions)
+    ws_trans = wb.create_sheet("Transactions")
+    
+    headers = ['Order ID', 'Invoice', 'Date', 'Time', 'Item Count', 'Total Amount']
+    for col_idx, header in enumerate(headers, 1):
+        ws_trans.cell(row=1, column=col_idx, value=header)
+        ws_trans.cell(row=1, column=col_idx).font = Font(bold=True, color="FFFFFF")
+        ws_trans.cell(row=1, column=col_idx).fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+    
+    for row_idx, row in enumerate(trans_df.values, 2):
+        ws_trans.cell(row=row_idx, column=1, value=row[0])  # order_id
+        ws_trans.cell(row=row_idx, column=2, value=row[1])  # invoice
+        ws_trans.cell(row=row_idx, column=3, value=row[2])  # date
+        ws_trans.cell(row=row_idx, column=4, value=row[3])  # time
+        ws_trans.cell(row=row_idx, column=5, value=row[4])  # items
+        ws_trans.cell(row=row_idx, column=6, value=row[5])  # total
+    
+    ws_trans.column_dimensions['A'].width = 12
+    ws_trans.column_dimensions['B'].width = 12
+    ws_trans.column_dimensions['C'].width = 12
+    ws_trans.column_dimensions['D'].width = 12
+    ws_trans.column_dimensions['E'].width = 12
+    ws_trans.column_dimensions['F'].width = 15
+    
+    # Items Summary Sheet
+    items_df = create_items_summary_df(transactions)
+    ws_items = wb.create_sheet("Items Summary")
+    
+    headers = ['Item Name', 'Quantity', 'Total Amount', 'Transaction Count']
+    for col_idx, header in enumerate(headers, 1):
+        ws_items.cell(row=1, column=col_idx, value=header)
+        ws_items.cell(row=1, column=col_idx).font = Font(bold=True, color="FFFFFF")
+        ws_items.cell(row=1, column=col_idx).fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+    
+    for row_idx, row in enumerate(items_df.values, 2):
+        ws_items.cell(row=row_idx, column=1, value=row[0])  # name
+        ws_items.cell(row=row_idx, column=2, value=row[1])  # quantity
+        ws_items.cell(row=row_idx, column=3, value=row[2])  # total
+        ws_items.cell(row=row_idx, column=4, value=row[3])  # count
+    
+    ws_items.column_dimensions['A'].width = 25
+    ws_items.column_dimensions['B'].width = 12
+    ws_items.column_dimensions['C'].width = 15
+    ws_items.column_dimensions['D'].width = 18
+    
+    # Save
+    wb.save(filepath)
+    
+    return daily_df, trans_df, items_df

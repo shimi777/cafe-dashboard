@@ -59,7 +59,7 @@ streamlit run app.py --logger.level=debug
 
 ```python
 # test_parser.py
-from html_to_excel import parse_html_transactions, create_daily_summary
+from old_dasboard.html_to_excel import parse_html_transactions, create_daily_summary
 
 with open('example_report.html', 'r', encoding='utf-8') as f:
     html = f.read()

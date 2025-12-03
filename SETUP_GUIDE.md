@@ -112,7 +112,7 @@ Order   | Invoice | Date | Time  | Items | Total
 ### שימוש בסיסי
 
 ```python
-from html_to_excel import parse_html_transactions, create_daily_summary
+from old_dasboard.html_to_excel import parse_html_transactions, create_daily_summary
 
 # קרא HTML
 with open('report.html') as f:
@@ -147,7 +147,7 @@ items_df  # item_name, quantity, total_amount, transaction_count
 
 ```python
 import pandas as pd
-from html_to_excel import (
+from old_dasboard.html_to_excel import (
     parse_html_transactions,
     create_daily_summary,
     create_items_summary_df
