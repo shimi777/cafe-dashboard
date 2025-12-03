@@ -724,20 +724,6 @@ if uploaded_files and len(uploaded_files) > 0:
 
                         st.markdown("---")
 
-                        # Weekly events metric
-                        col_events_week1, col_events_week2 = st.columns(2)
-
-                        weekly_events = len(trans_df[trans_df['WeekStart'] == selected_week])
-                        with col_events_week1:
-                            st.metric(
-                                "אירועים בשבוע",
-                                f"{weekly_events:,}",
-                                delta=None
-                            )
-
-                        with col_events_week2:
-                            st.info(f"📊 סה״כ אירועים בחודש: {len(trans_df)}")
-
                         st.markdown("---")
 
                         # Weekly progress chart
