@@ -1596,4 +1596,4 @@ else:
 
                 st.dataframe(progress_w_df, use_container_width=True, hide_index=True)
             else:
-                st.warning("אין נתונים שבועיים")
+                st.warning("איןעןא  נתונים שבועיים")
