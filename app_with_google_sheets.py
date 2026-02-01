@@ -1,6 +1,7 @@
 """
 דוח פעולות ודוח מכירות יומי - קומקום
 גרסה משולבת עם תמיכה ב-Google Sheets וסינון תאריכים
+אופטימיזציה לביצועים
 """
 
 import streamlit as st
@@ -17,12 +18,40 @@ from google_sheets_connector import (
     save_to_cloud,
     transactions_to_flat_df,
     cloud_data_to_transactions,
-    check_connection_status
+    check_connection_status,
+    clear_cloud_cache
 )
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
 import io
+
+# ============================================================
+# CACHED FUNCTIONS - לשיפור ביצועים
+# ============================================================
+
+def get_transactions_hash(transactions):
+    """יצירת hash מרשימת טרנזקציות לצורך cache key"""
+    if not transactions:
+        return "empty"
+    # יצירת מחרוזת ייחודית מהנתונים
+    key_parts = [f"{t['order_id']}_{t['date']}_{t['total']}" for t in transactions]
+    return hash(tuple(key_parts))
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_create_daily_summary(cache_key, _transactions):
+    """יצירת סיכום יומי עם cache"""
+    return create_daily_summary(_transactions)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_create_trans_df(cache_key, _transactions):
+    """יצירת DataFrame טרנזקציות עם cache"""
+    return create_detailed_transactions_df(_transactions)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_create_items_df(cache_key, _transactions):
+    """יצירת DataFrame פריטים עם cache"""
+    return create_items_summary_df(_transactions)
 
 # Page Configuration
 st.set_page_config(
@@ -120,13 +149,24 @@ if data_source in ['html', 'combined'] and uploaded_files:
     if html_transactions:
         st.sidebar.success(f"✅ {len(html_transactions)} טרנזקציות מ-HTML")
 
-# Load from Cloud
+# Load from Cloud - with session state caching
 if data_source in ['cloud', 'combined'] and st.session_state.cloud_connected:
-    with st.spinner("טוען מהענן..."):
-        cloud_df = get_cloud_history()
-        if not cloud_df.empty:
-            cloud_transactions = cloud_data_to_transactions(cloud_df)
-            st.sidebar.success(f"✅ {len(cloud_transactions)} טרנזקציות מהענן")
+    # בדוק אם כבר יש נתונים ב-session state
+    cache_key = 'cloud_transactions_cache'
+
+    if cache_key not in st.session_state or st.session_state.get('force_reload', False):
+        with st.spinner("טוען מהענן..."):
+            cloud_df = get_cloud_history()
+            if not cloud_df.empty:
+                cloud_transactions = cloud_data_to_transactions(cloud_df)
+                st.session_state[cache_key] = cloud_transactions
+                st.session_state['force_reload'] = False
+            else:
+                st.session_state[cache_key] = []
+
+    cloud_transactions = st.session_state.get(cache_key, [])
+    if cloud_transactions:
+        st.sidebar.success(f"✅ {len(cloud_transactions)} טרנזקציות מהענן")
 
 # Combine transactions
 if data_source == 'html':
@@ -151,10 +191,20 @@ if data_source == 'combined' and html_transactions and st.session_state.cloud_co
             flat_df = transactions_to_flat_df(html_transactions)
             added = save_to_cloud(flat_df)
             if added > 0:
+                clear_cloud_cache()  # ניקוי cache אחרי שמירה
                 st.sidebar.success(f"✅ נוספו {added} רשומות!")
                 st.rerun()
             else:
                 st.sidebar.info("אין רשומות חדשות")
+
+# Refresh button for cloud data
+if data_source in ['cloud', 'combined'] and st.session_state.cloud_connected:
+    if st.sidebar.button("🔄 רענן נתונים מהענן"):
+        clear_cloud_cache()
+        st.session_state['force_reload'] = True
+        if 'cloud_transactions_cache' in st.session_state:
+            del st.session_state['cloud_transactions_cache']
+        st.rerun()
 
 # DATE FILTER SECTION
 start_date = None
@@ -170,12 +220,12 @@ if transactions:
 
     filter_option = st.sidebar.selectbox(
         "בחר תקופה מהירה:",
-        options=['custom', 'today', 'yesterday', 'this_week', 'last_week', 'this_month', 'last_month', 'all'],
+        options=['all', 'custom', 'today', 'yesterday', 'this_week', 'last_week', 'this_month', 'last_month'],
         format_func=lambda x: {
             'custom': '📆 בחירה ידנית',
             'today': '📍 היום',
             'yesterday': '⬅️ אתמול',
-            'this_week': '📅 השבוע הנוכחי',
+            'this_week': '📅 השבוע הנוכחי (א׳-ש׳)',
             'last_week': '📅 השבוע שעבר',
             'this_month': '🗓️ החודש הנוכחי',
             'last_month': '🗓️ החודש שעבר',
@@ -185,43 +235,86 @@ if transactions:
 
     today = datetime.now().date()
 
+    # חישוב תחילת השבוע הישראלי (יום ראשון)
+    # weekday(): Sunday=6, Monday=0, ..., Saturday=5
+    # אנחנו רוצים שיום ראשון יהיה תחילת השבוע
+    days_since_sunday = (today.weekday() + 1) % 7  # Sunday=0, Monday=1, ..., Saturday=6
+
     if filter_option == 'today':
-        start_date = today
-        end_date = today
+        calc_start = today
+        calc_end = today
     elif filter_option == 'yesterday':
-        start_date = today - timedelta(days=1)
-        end_date = today - timedelta(days=1)
+        calc_start = today - timedelta(days=1)
+        calc_end = today - timedelta(days=1)
     elif filter_option == 'this_week':
-        start_date = today - timedelta(days=today.weekday())
-        end_date = today
+        # השבוע הנוכחי - מיום ראשון
+        calc_start = today - timedelta(days=days_since_sunday)
+        calc_end = today
     elif filter_option == 'last_week':
-        start_date = today - timedelta(days=today.weekday() + 7)
-        end_date = today - timedelta(days=today.weekday() + 1)
+        # השבוע שעבר - מיום ראשון ליום שבת
+        this_week_start = today - timedelta(days=days_since_sunday)
+        calc_start = this_week_start - timedelta(days=7)
+        calc_end = this_week_start - timedelta(days=1)
     elif filter_option == 'this_month':
-        start_date = today.replace(day=1)
-        end_date = today
+        calc_start = today.replace(day=1)
+        calc_end = today
     elif filter_option == 'last_month':
         first_of_this_month = today.replace(day=1)
-        end_date = first_of_this_month - timedelta(days=1)
-        start_date = end_date.replace(day=1)
+        calc_end = first_of_this_month - timedelta(days=1)
+        calc_start = calc_end.replace(day=1)
     elif filter_option == 'all':
+        calc_start = min_date
+        calc_end = max_date
+    else:  # custom
+        calc_start = min_date
+        calc_end = max_date
+
+    # התאמת התאריכים לטווח הנתונים הקיים
+    # אם התאריך המבוקש מחוץ לטווח, התאם אותו
+    start_date = max(calc_start, min_date)
+    end_date = min(calc_end, max_date)
+
+    # ודא ש-start_date לא גדול מ-end_date
+    if start_date > end_date:
         start_date = min_date
         end_date = max_date
-    else:
-        start_date = min_date
-        end_date = max_date
+        st.sidebar.warning(f"⚠️ התקופה המבוקשת מחוץ לטווח הנתונים. מציג את כל הנתונים.")
+
+    # הצגת התאריכים המחושבים vs מה שזמין
+    if filter_option not in ['all', 'custom']:
+        if calc_start < min_date or calc_end > max_date:
+            st.sidebar.info(f"📌 נתונים זמינים: {min_date.strftime('%d/%m/%Y')} - {max_date.strftime('%d/%m/%Y')}")
 
     col_date1, col_date2 = st.sidebar.columns(2)
 
     with col_date1:
-        start_date = st.date_input("מתאריך", value=start_date, min_value=min_date, max_value=max_date, key='start_date')
+        start_date = st.date_input(
+            "מתאריך",
+            value=start_date,
+            min_value=min_date,
+            max_value=max_date,
+            key='start_date'
+        )
 
     with col_date2:
-        end_date = st.date_input("עד תאריך", value=end_date, min_value=min_date, max_value=max_date, key='end_date')
+        end_date = st.date_input(
+            "עד תאריך",
+            value=end_date,
+            min_value=min_date,
+            max_value=max_date,
+            key='end_date'
+        )
+
+    # ודא שוב ש-start <= end אחרי בחירת המשתמש
+    if start_date > end_date:
+        st.sidebar.error("⚠️ תאריך התחלה חייב להיות לפני תאריך סיום")
+        start_date, end_date = end_date, start_date
 
     filtered_transactions = [t for t in transactions if start_date <= t['date'] <= end_date]
 
-    if len(filtered_transactions) != len(transactions):
+    if len(filtered_transactions) == 0:
+        st.sidebar.warning(f"⚠️ אין נתונים בטווח התאריכים הנבחר")
+    elif len(filtered_transactions) != len(transactions):
         st.sidebar.info(f"🔍 מוצגות {len(filtered_transactions)} מתוך {len(transactions)} טרנזקציות")
     else:
         st.sidebar.success(f"📊 מוצגות כל {len(transactions)} הטרנזקציות")
@@ -265,6 +358,8 @@ if not transactions:
         
         צור קובץ `.streamlit/secrets.toml` עם credentials של Google Service Account.
         """)
+elif len(transactions) == 0:
+    st.warning("⚠️ אין נתונים בטווח התאריכים הנבחר. נסה לבחור טווח תאריכים אחר.")
 else:
     # Display Filter Status Bar
     filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
@@ -282,16 +377,26 @@ else:
 
     st.markdown("---")
 
-    # Create DataFrames
-    daily_df = create_daily_summary(transactions)
+    # Create cache key from filtered transactions
+    cache_key = get_transactions_hash(transactions)
+
+    # Create DataFrames with caching
+    daily_df = cached_create_daily_summary(cache_key, transactions)
     if 'date' in daily_df.columns:
+        daily_df = daily_df.copy()
         daily_df['date'] = pd.to_datetime(daily_df['date'])
 
-    trans_df = create_detailed_transactions_df(transactions)
-    items_df = create_items_summary_df(transactions)
+    trans_df = cached_create_trans_df(cache_key, transactions)
+    trans_df = trans_df.copy()
+    items_df = cached_create_items_df(cache_key, transactions)
 
     trans_df['Date'] = pd.to_datetime(trans_df['Date'])
-    trans_df['WeekStart'] = trans_df['Date'] - trans_df['Date'].dt.weekday.apply(lambda x: pd.Timedelta(days=x))
+    # שבוע ישראלי - מתחיל ביום ראשון
+    # weekday(): Monday=0, Sunday=6
+    # נחשב כמה ימים עברו מיום ראשון: (weekday + 1) % 7
+    trans_df['WeekStart'] = trans_df['Date'] - trans_df['Date'].dt.weekday.apply(
+        lambda x: pd.Timedelta(days=(x + 1) % 7)
+    )
 
     monthly_goal = st.session_state.goals['revenue_monthly']
 

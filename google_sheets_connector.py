@@ -104,9 +104,11 @@ def get_worksheet(_gc, sheet_name: str):
         return None
 
 
+@st.cache_data(ttl=300, show_spinner="טוען נתונים מהענן...")
 def get_cloud_history(sheet_name: str = "History") -> pd.DataFrame:
     """
     קריאת כל ההיסטוריה מ-Google Sheets
+    עם caching ל-5 דקות
 
     Args:
         sheet_name: שם הגיליון (ברירת מחדל: "History")
@@ -143,8 +145,12 @@ def get_cloud_history(sheet_name: str = "History") -> pd.DataFrame:
         return df
 
     except Exception as e:
-        st.error(f"❌ שגיאה בקריאת נתונים מהענן: {str(e)}")
         return pd.DataFrame(columns=REQUIRED_COLUMNS)
+
+
+def clear_cloud_cache():
+    """ניקוי cache של נתוני הענן - קרא אחרי שמירת נתונים חדשים"""
+    get_cloud_history.clear()
 
 
 def transactions_to_flat_df(transactions: list) -> pd.DataFrame:
@@ -315,19 +321,22 @@ def delete_from_cloud(transaction_ids: list, sheet_name: str = "History") -> int
         return 0
 
 
-def cloud_data_to_transactions(df: pd.DataFrame) -> list:
+@st.cache_data(ttl=300)
+def cloud_data_to_transactions(_df: pd.DataFrame) -> list:
     """
     המרת DataFrame מהענן חזרה למבנה transactions
     מותאם למבנה ה-Google Sheet
 
     Args:
-        df: DataFrame מ-Google Sheets
+        _df: DataFrame מ-Google Sheets (underscore prefix for caching)
 
     Returns:
         רשימת טרנזקציות
     """
-    if df.empty:
+    if _df.empty:
         return []
+
+    df = _df.copy()  # Work with a copy
 
     # קבץ לפי Order_ID
     transactions = []
