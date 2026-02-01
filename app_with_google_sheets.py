@@ -401,9 +401,10 @@ else:
     monthly_goal = st.session_state.goals['revenue_monthly']
 
     # Tabs
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
         "📈 דוח יומי", "🛍️ ניתוח מוצרים", "📊 סיכום פריטים",
-        "📉 ניתוח מתקדם", "⬇️ הורד דוחות", "🎯 יעדים"
+        "📉 ניתוח מתקדם", "📅 השוואת חודשים", "🕐 שעות שיא",
+        "🛒 ניתוח סל", "🏆 הישגים", "⬇️ הורד דוחות", "🎯 יעדים"
     ])
 
     # Tab 1: Daily Report
@@ -517,8 +518,970 @@ else:
 
             st.dataframe(weekly_df, use_container_width=True, hide_index=True)
 
-    # Tab 5: Download Reports
+    # Tab 5: Month Comparison
     with tab5:
+        st.markdown("## 📅 השוואת חודשים")
+
+        # Get all transactions (not filtered) for comparison
+        all_trans_for_comparison = st.session_state.transactions
+
+        if not all_trans_for_comparison:
+            st.warning("אין נתונים להשוואה")
+        else:
+            # Get available months from all data
+            all_dates = [t['date'] for t in all_trans_for_comparison]
+
+            # Create month options
+            months_available = sorted(set((d.year, d.month) for d in all_dates), reverse=True)
+
+            if len(months_available) < 2:
+                st.warning("נדרשים לפחות 2 חודשים של נתונים להשוואה")
+            else:
+                # Month selectors
+                col_m1, col_m2 = st.columns(2)
+
+                month_names_heb = {
+                    1: 'ינואר', 2: 'פברואר', 3: 'מרץ', 4: 'אפריל',
+                    5: 'מאי', 6: 'יוני', 7: 'יולי', 8: 'אוגוסט',
+                    9: 'ספטמבר', 10: 'אוקטובר', 11: 'נובמבר', 12: 'דצמבר'
+                }
+
+                def format_month(ym):
+                    return f"{month_names_heb[ym[1]]} {ym[0]}"
+
+                with col_m1:
+                    current_month_idx = st.selectbox(
+                        "חודש נוכחי:",
+                        options=range(len(months_available)),
+                        format_func=lambda x: format_month(months_available[x]),
+                        index=0,
+                        key='current_month_select'
+                    )
+                    current_month = months_available[current_month_idx]
+
+                with col_m2:
+                    # Filter out the current month from previous options
+                    prev_options = [i for i in range(len(months_available)) if i != current_month_idx]
+                    default_prev = prev_options[0] if prev_options else 0
+
+                    previous_month_idx = st.selectbox(
+                        "חודש קודם:",
+                        options=prev_options,
+                        format_func=lambda x: format_month(months_available[x]),
+                        index=0,
+                        key='previous_month_select'
+                    )
+                    previous_month = months_available[previous_month_idx]
+
+                # Filter transactions for each month
+                def get_month_transactions(transactions, year, month):
+                    return [t for t in transactions if t['date'].year == year and t['date'].month == month]
+
+                current_trans = get_month_transactions(all_trans_for_comparison, current_month[0], current_month[1])
+                previous_trans = get_month_transactions(all_trans_for_comparison, previous_month[0], previous_month[1])
+
+                st.markdown("---")
+
+                # === REVENUE COMPARISON ===
+                st.markdown("### 💰 השוואת הכנסות")
+
+                current_revenue = sum(t['total'] for t in current_trans)
+                previous_revenue = sum(t['total'] for t in previous_trans)
+
+                revenue_diff = current_revenue - previous_revenue
+                revenue_pct_change = ((current_revenue / previous_revenue) - 1) * 100 if previous_revenue > 0 else 0
+
+                col_rev1, col_rev2, col_rev3, col_rev4 = st.columns(4)
+
+                with col_rev1:
+                    st.metric(
+                        f"📊 {format_month(current_month)}",
+                        f"₪ {current_revenue:,.0f}",
+                        delta=None
+                    )
+
+                with col_rev2:
+                    st.metric(
+                        f"📊 {format_month(previous_month)}",
+                        f"₪ {previous_revenue:,.0f}",
+                        delta=None
+                    )
+
+                with col_rev3:
+                    delta_str = f"₪ {revenue_diff:+,.0f}"
+                    st.metric(
+                        "הפרש",
+                        f"₪ {abs(revenue_diff):,.0f}",
+                        delta=delta_str,
+                        delta_color="normal"
+                    )
+
+                with col_rev4:
+                    st.metric(
+                        "שינוי באחוזים",
+                        f"{revenue_pct_change:+.1f}%",
+                        delta="עלייה 📈" if revenue_pct_change > 0 else "ירידה 📉" if revenue_pct_change < 0 else "ללא שינוי",
+                        delta_color="normal" if revenue_pct_change >= 0 else "inverse"
+                    )
+
+                # Revenue comparison chart
+                revenue_comparison_df = pd.DataFrame({
+                    'חודש': [format_month(previous_month), format_month(current_month)],
+                    'הכנסה': [previous_revenue, current_revenue]
+                })
+
+                fig_revenue = px.bar(
+                    revenue_comparison_df,
+                    x='חודש',
+                    y='הכנסה',
+                    title='השוואת הכנסות בין חודשים',
+                    color='חודש',
+                    color_discrete_sequence=['#94a3b8', '#3b82f6'],
+                    text='הכנסה'
+                )
+                fig_revenue.update_traces(texttemplate='₪%{text:,.0f}', textposition='outside')
+                fig_revenue.update_layout(showlegend=False, yaxis_title='הכנסה (₪)')
+                st.plotly_chart(fig_revenue, use_container_width=True)
+
+                st.markdown("---")
+
+                # === TRANSACTIONS COMPARISON ===
+                st.markdown("### 🧾 השוואת עסקאות")
+
+                current_trans_count = len(current_trans)
+                previous_trans_count = len(previous_trans)
+                trans_diff = current_trans_count - previous_trans_count
+                trans_pct_change = ((current_trans_count / previous_trans_count) - 1) * 100 if previous_trans_count > 0 else 0
+
+                current_avg = current_revenue / current_trans_count if current_trans_count > 0 else 0
+                previous_avg = previous_revenue / previous_trans_count if previous_trans_count > 0 else 0
+                avg_diff = current_avg - previous_avg
+
+                col_trans1, col_trans2, col_trans3, col_trans4 = st.columns(4)
+
+                with col_trans1:
+                    st.metric(f"עסקאות {format_month(current_month)}", f"{current_trans_count:,}")
+
+                with col_trans2:
+                    st.metric(f"עסקאות {format_month(previous_month)}", f"{previous_trans_count:,}")
+
+                with col_trans3:
+                    st.metric("שינוי בעסקאות", f"{trans_diff:+,}", delta=f"{trans_pct_change:+.1f}%")
+
+                with col_trans4:
+                    st.metric("שינוי בממוצע לעסקה", f"₪ {avg_diff:+,.0f}",
+                             delta=f"נוכחי: ₪{current_avg:,.0f}")
+
+                st.markdown("---")
+
+                # === CATEGORY COMPARISON ===
+                st.markdown("### 📦 השוואה לפי קטגוריות מוצרים")
+
+                # Define categories to track
+                categories = list(st.session_state.goals['category_monthly'].keys())
+
+                # Calculate category totals for each month
+                def get_category_stats(transactions, categories):
+                    stats = {}
+                    for cat in categories:
+                        count = sum(
+                            item['quantity']
+                            for t in transactions
+                            for item in t['items']
+                            if cat in item['name']
+                        )
+                        revenue = sum(
+                            item['total_price']
+                            for t in transactions
+                            for item in t['items']
+                            if cat in item['name']
+                        )
+                        stats[cat] = {'quantity': count, 'revenue': revenue}
+                    return stats
+
+                current_cat_stats = get_category_stats(current_trans, categories)
+                previous_cat_stats = get_category_stats(previous_trans, categories)
+
+                # Create comparison dataframe
+                category_comparison = []
+                for cat in categories:
+                    curr_qty = current_cat_stats[cat]['quantity']
+                    prev_qty = previous_cat_stats[cat]['quantity']
+                    curr_rev = current_cat_stats[cat]['revenue']
+                    prev_rev = previous_cat_stats[cat]['revenue']
+
+                    qty_change = curr_qty - prev_qty
+                    qty_pct = ((curr_qty / prev_qty) - 1) * 100 if prev_qty > 0 else (100 if curr_qty > 0 else 0)
+
+                    rev_change = curr_rev - prev_rev
+                    rev_pct = ((curr_rev / prev_rev) - 1) * 100 if prev_rev > 0 else (100 if curr_rev > 0 else 0)
+
+                    category_comparison.append({
+                        'קטגוריה': cat,
+                        f'כמות {format_month(previous_month)}': prev_qty,
+                        f'כמות {format_month(current_month)}': curr_qty,
+                        'שינוי כמות': qty_change,
+                        'שינוי %': qty_pct,
+                        f'הכנסה {format_month(previous_month)}': prev_rev,
+                        f'הכנסה {format_month(current_month)}': curr_rev,
+                        'שינוי הכנסה': rev_change
+                    })
+
+                category_df = pd.DataFrame(category_comparison)
+
+                # Category quantity comparison chart
+                cat_qty_data = []
+                for cat in categories:
+                    cat_qty_data.append({'קטגוריה': cat, 'חודש': format_month(previous_month),
+                                        'כמות': previous_cat_stats[cat]['quantity']})
+                    cat_qty_data.append({'קטגוריה': cat, 'חודש': format_month(current_month),
+                                        'כמות': current_cat_stats[cat]['quantity']})
+
+                cat_qty_df = pd.DataFrame(cat_qty_data)
+
+                fig_cat_qty = px.bar(
+                    cat_qty_df,
+                    x='קטגוריה',
+                    y='כמות',
+                    color='חודש',
+                    barmode='group',
+                    title='השוואת כמויות לפי קטגוריה',
+                    color_discrete_sequence=['#94a3b8', '#10b981'],
+                    text='כמות'
+                )
+                fig_cat_qty.update_traces(textposition='outside')
+                st.plotly_chart(fig_cat_qty, use_container_width=True)
+
+                # Category revenue comparison chart
+                cat_rev_data = []
+                for cat in categories:
+                    cat_rev_data.append({'קטגוריה': cat, 'חודש': format_month(previous_month),
+                                        'הכנסה': previous_cat_stats[cat]['revenue']})
+                    cat_rev_data.append({'קטגוריה': cat, 'חודש': format_month(current_month),
+                                        'הכנסה': current_cat_stats[cat]['revenue']})
+
+                cat_rev_df = pd.DataFrame(cat_rev_data)
+
+                fig_cat_rev = px.bar(
+                    cat_rev_df,
+                    x='קטגוריה',
+                    y='הכנסה',
+                    color='חודש',
+                    barmode='group',
+                    title='השוואת הכנסות לפי קטגוריה',
+                    color_discrete_sequence=['#94a3b8', '#f59e0b'],
+                    text='הכנסה'
+                )
+                fig_cat_rev.update_traces(texttemplate='₪%{text:,.0f}', textposition='outside')
+                fig_cat_rev.update_layout(yaxis_title='הכנסה (₪)')
+                st.plotly_chart(fig_cat_rev, use_container_width=True)
+
+                # Detailed comparison table
+                st.markdown("#### 📋 טבלת השוואה מפורטת")
+
+                display_cat_df = category_df.copy()
+
+                # Format columns
+                for col in display_cat_df.columns:
+                    if 'הכנסה' in col and col != 'שינוי הכנסה':
+                        display_cat_df[col] = display_cat_df[col].apply(lambda x: f"₪ {x:,.0f}")
+                    elif col == 'שינוי הכנסה':
+                        display_cat_df[col] = display_cat_df[col].apply(lambda x: f"₪ {x:+,.0f}")
+                    elif col == 'שינוי %':
+                        display_cat_df[col] = display_cat_df[col].apply(lambda x: f"{x:+.1f}%")
+                    elif col == 'שינוי כמות':
+                        display_cat_df[col] = display_cat_df[col].apply(lambda x: f"{x:+.0f}")
+
+                st.dataframe(display_cat_df, use_container_width=True, hide_index=True)
+
+                st.markdown("---")
+
+                # === TOP PRODUCTS COMPARISON ===
+                st.markdown("### 🏆 השוואת מוצרים מובילים")
+
+                # Get top products for each month
+                def get_top_products(transactions, n=10):
+                    products = {}
+                    for t in transactions:
+                        for item in t['items']:
+                            name = item['name']
+                            if name not in products:
+                                products[name] = {'quantity': 0, 'revenue': 0}
+                            products[name]['quantity'] += item['quantity']
+                            products[name]['revenue'] += item['total_price']
+
+                    # Sort by revenue
+                    sorted_products = sorted(products.items(), key=lambda x: x[1]['revenue'], reverse=True)
+                    return dict(sorted_products[:n])
+
+                current_top = get_top_products(current_trans, 10)
+                previous_top = get_top_products(previous_trans, 10)
+
+                # Combine unique products
+                all_top_products = set(current_top.keys()) | set(previous_top.keys())
+
+                top_products_comparison = []
+                for product in all_top_products:
+                    curr_rev = current_top.get(product, {}).get('revenue', 0)
+                    prev_rev = previous_top.get(product, {}).get('revenue', 0)
+                    change = curr_rev - prev_rev
+
+                    top_products_comparison.append({
+                        'מוצר': product,
+                        f'{format_month(previous_month)}': prev_rev,
+                        f'{format_month(current_month)}': curr_rev,
+                        'שינוי': change
+                    })
+
+                # Sort by current month revenue
+                top_products_df = pd.DataFrame(top_products_comparison)
+                top_products_df = top_products_df.sort_values(f'{format_month(current_month)}', ascending=False).head(15)
+
+                # Format for display
+                display_top_df = top_products_df.copy()
+                for col in display_top_df.columns:
+                    if col != 'מוצר':
+                        if col == 'שינוי':
+                            display_top_df[col] = display_top_df[col].apply(lambda x: f"₪ {x:+,.0f}")
+                        else:
+                            display_top_df[col] = display_top_df[col].apply(lambda x: f"₪ {x:,.0f}")
+
+                st.dataframe(display_top_df, use_container_width=True, hide_index=True)
+
+    # Tab 6: Peak Hours Analysis
+    with tab6:
+        st.markdown("## 🕐 ניתוח שעות שיא")
+        st.info("ניתוח דפוסי מכירות לפי שעות ביום וימים בשבוע - לאופטימיזציה של משמרות ושיווק")
+
+        if not transactions:
+            st.warning("אין נתונים לניתוח")
+        else:
+            # Prepare hourly data
+            hourly_data = []
+            daily_data_by_day = []
+
+            day_names_heb = {
+                6: 'ראשון', 0: 'שני', 1: 'שלישי', 2: 'רביעי',
+                3: 'חמישי', 4: 'שישי', 5: 'שבת'
+            }
+
+            for t in transactions:
+                if t['time']:
+                    hour = t['time'].hour
+                    # Get day of week (Sunday = 0 in Israeli week)
+                    day_num = (t['date'].weekday() + 1) % 7
+                    day_name = day_names_heb.get(t['date'].weekday(), 'לא ידוע')
+
+                    hourly_data.append({
+                        'hour': hour,
+                        'day_num': day_num,
+                        'day_name': day_name,
+                        'revenue': t['total'],
+                        'items': len(t['items'])
+                    })
+
+            if hourly_data:
+                hourly_df = pd.DataFrame(hourly_data)
+
+                # === HOURLY SUMMARY ===
+                st.markdown("### ⏰ סיכום לפי שעות")
+
+                hourly_summary = hourly_df.groupby('hour').agg({
+                    'revenue': ['sum', 'count', 'mean']
+                }).round(2)
+                hourly_summary.columns = ['סה״כ הכנסה', 'מספר עסקאות', 'ממוצע לעסקה']
+                hourly_summary = hourly_summary.reset_index()
+                hourly_summary.columns = ['שעה', 'סה״כ הכנסה', 'מספר עסקאות', 'ממוצע לעסקה']
+
+                # Find peak hours
+                peak_hour = hourly_summary.loc[hourly_summary['סה״כ הכנסה'].idxmax(), 'שעה']
+                peak_revenue = hourly_summary['סה״כ הכנסה'].max()
+                low_hour = hourly_summary.loc[hourly_summary['סה״כ הכנסה'].idxmin(), 'שעה']
+
+                col_h1, col_h2, col_h3, col_h4 = st.columns(4)
+
+                with col_h1:
+                    st.metric("🔥 שעת שיא", f"{int(peak_hour):02d}:00", delta=f"₪ {peak_revenue:,.0f}")
+
+                with col_h2:
+                    st.metric("😴 שעה חלשה", f"{int(low_hour):02d}:00")
+
+                with col_h3:
+                    morning_rev = hourly_df[hourly_df['hour'].between(6, 12)]['revenue'].sum()
+                    st.metric("🌅 בוקר (6-12)", f"₪ {morning_rev:,.0f}")
+
+                with col_h4:
+                    afternoon_rev = hourly_df[hourly_df['hour'].between(12, 18)]['revenue'].sum()
+                    st.metric("☀️ צהריים (12-18)", f"₪ {afternoon_rev:,.0f}")
+
+                # Hourly revenue chart
+                fig_hourly = px.bar(
+                    hourly_summary,
+                    x='שעה',
+                    y='סה״כ הכנסה',
+                    title='הכנסות לפי שעה ביום',
+                    color='סה״כ הכנסה',
+                    color_continuous_scale='RdYlGn',
+                    text='מספר עסקאות'
+                )
+                fig_hourly.update_traces(texttemplate='%{text} עסקאות', textposition='outside')
+                fig_hourly.update_layout(xaxis=dict(dtick=1), yaxis_title='הכנסה (₪)')
+                st.plotly_chart(fig_hourly, use_container_width=True)
+
+                st.markdown("---")
+
+                # === DAILY SUMMARY ===
+                st.markdown("### 📅 סיכום לפי ימים בשבוע")
+
+                # Sort by Israeli week order
+                day_order = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת']
+
+                daily_summary = hourly_df.groupby('day_name').agg({
+                    'revenue': ['sum', 'count', 'mean']
+                }).round(2)
+                daily_summary.columns = ['סה״כ הכנסה', 'מספר עסקאות', 'ממוצע לעסקה']
+                daily_summary = daily_summary.reset_index()
+                daily_summary.columns = ['יום', 'סה״כ הכנסה', 'מספר עסקאות', 'ממוצע לעסקה']
+
+                # Sort by day order
+                daily_summary['sort_order'] = daily_summary['יום'].apply(lambda x: day_order.index(x) if x in day_order else 7)
+                daily_summary = daily_summary.sort_values('sort_order').drop('sort_order', axis=1)
+
+                # Find best and worst days
+                best_day = daily_summary.loc[daily_summary['סה״כ הכנסה'].idxmax(), 'יום']
+                worst_day = daily_summary.loc[daily_summary['סה״כ הכנסה'].idxmin(), 'יום']
+
+                col_d1, col_d2 = st.columns(2)
+
+                with col_d1:
+                    st.metric("🏆 יום הכי חזק", best_day)
+
+                with col_d2:
+                    st.metric("📉 יום הכי חלש", worst_day)
+
+                fig_daily = px.bar(
+                    daily_summary,
+                    x='יום',
+                    y='סה״כ הכנסה',
+                    title='הכנסות לפי יום בשבוע',
+                    color='סה״כ הכנסה',
+                    color_continuous_scale='Viridis',
+                    text='מספר עסקאות'
+                )
+                fig_daily.update_traces(texttemplate='%{text}', textposition='outside')
+                fig_daily.update_layout(yaxis_title='הכנסה (₪)')
+                st.plotly_chart(fig_daily, use_container_width=True)
+
+                st.markdown("---")
+
+                # === HEATMAP ===
+                st.markdown("### 🗺️ מפת חום - שעות × ימים")
+
+                # Create pivot table for heatmap
+                heatmap_data = hourly_df.groupby(['day_name', 'hour'])['revenue'].sum().reset_index()
+                heatmap_pivot = heatmap_data.pivot(index='day_name', columns='hour', values='revenue').fillna(0)
+
+                # Reorder days
+                heatmap_pivot = heatmap_pivot.reindex(day_order)
+                heatmap_pivot = heatmap_pivot.dropna(how='all')
+
+                fig_heatmap = px.imshow(
+                    heatmap_pivot,
+                    labels=dict(x="שעה", y="יום", color="הכנסה (₪)"),
+                    title='מפת חום: הכנסות לפי יום ושעה',
+                    color_continuous_scale='RdYlGn',
+                    aspect='auto'
+                )
+                fig_heatmap.update_layout(
+                    xaxis=dict(dtick=1),
+                    height=400
+                )
+                st.plotly_chart(fig_heatmap, use_container_width=True)
+
+                st.markdown("---")
+
+                # === RECOMMENDATIONS ===
+                st.markdown("### 💡 המלצות")
+
+                col_rec1, col_rec2 = st.columns(2)
+
+                with col_rec1:
+                    st.success(f"""
+                    **שעות שיא למשמרות מחוזקות:**
+                    - שעת השיא: {int(peak_hour):02d}:00
+                    - מומלץ לחזק איוש בשעות אלו
+                    - שקול מבצעים בשעות החלשות ({int(low_hour):02d}:00)
+                    """)
+
+                with col_rec2:
+                    st.info(f"""
+                    **ימים להתמקדות:**
+                    - היום החזק: {best_day}
+                    - היום החלש: {worst_day}
+                    - שקול פעילות שיווקית ב{worst_day}
+                    """)
+
+                # Detailed tables
+                with st.expander("📋 טבלאות מפורטות"):
+                    st.markdown("**לפי שעות:**")
+                    display_hourly = hourly_summary.copy()
+                    display_hourly['סה״כ הכנסה'] = display_hourly['סה״כ הכנסה'].apply(lambda x: f"₪ {x:,.0f}")
+                    display_hourly['ממוצע לעסקה'] = display_hourly['ממוצע לעסקה'].apply(lambda x: f"₪ {x:,.0f}")
+                    display_hourly['שעה'] = display_hourly['שעה'].apply(lambda x: f"{int(x):02d}:00")
+                    st.dataframe(display_hourly, use_container_width=True, hide_index=True)
+
+                    st.markdown("**לפי ימים:**")
+                    display_daily = daily_summary.copy()
+                    display_daily['סה״כ הכנסה'] = display_daily['סה״כ הכנסה'].apply(lambda x: f"₪ {x:,.0f}")
+                    display_daily['ממוצע לעסקה'] = display_daily['ממוצע לעסקה'].apply(lambda x: f"₪ {x:,.0f}")
+                    st.dataframe(display_daily, use_container_width=True, hide_index=True)
+            else:
+                st.warning("אין נתוני שעות בטרנזקציות")
+
+    # Tab 7: Basket Analysis
+    with tab7:
+        st.markdown("## 🛒 ניתוח סל קניות")
+        st.info("גלה אילו מוצרים נקנים יחד - לבניית קומבינציות ומבצעים")
+
+        if not transactions:
+            st.warning("אין נתונים לניתוח")
+        else:
+            # Analyze baskets with 2+ items
+            multi_item_transactions = [t for t in transactions if len(t['items']) >= 2]
+
+            if not multi_item_transactions:
+                st.warning("אין עסקאות עם יותר ממוצר אחד")
+            else:
+                st.markdown(f"### 📊 סטטיסטיקות כלליות")
+
+                total_trans = len(transactions)
+                multi_trans = len(multi_item_transactions)
+                avg_basket_size = sum(len(t['items']) for t in transactions) / total_trans if total_trans > 0 else 0
+                avg_basket_value = sum(t['total'] for t in transactions) / total_trans if total_trans > 0 else 0
+
+                col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+
+                with col_b1:
+                    st.metric("סה״כ עסקאות", f"{total_trans:,}")
+
+                with col_b2:
+                    pct_multi = (multi_trans / total_trans * 100) if total_trans > 0 else 0
+                    st.metric("עסקאות עם 2+ מוצרים", f"{multi_trans:,}", delta=f"{pct_multi:.1f}%")
+
+                with col_b3:
+                    st.metric("ממוצע פריטים לסל", f"{avg_basket_size:.1f}")
+
+                with col_b4:
+                    st.metric("ממוצע ערך סל", f"₪ {avg_basket_value:,.0f}")
+
+                st.markdown("---")
+
+                # === PRODUCT PAIRS ===
+                st.markdown("### 👫 זוגות מוצרים פופולריים")
+                st.caption("מוצרים שנקנים יחד באותה עסקה")
+
+                from collections import Counter
+                from itertools import combinations
+
+                # Count product pairs
+                pair_counter = Counter()
+
+                for t in multi_item_transactions:
+                    # Get unique product names in transaction
+                    products = list(set(item['name'] for item in t['items']))
+
+                    if len(products) >= 2:
+                        # Generate all pairs
+                        for pair in combinations(sorted(products), 2):
+                            pair_counter[pair] += 1
+
+                # Get top pairs
+                top_pairs = pair_counter.most_common(20)
+
+                if top_pairs:
+                    pairs_data = []
+                    for pair, count in top_pairs:
+                        pairs_data.append({
+                            'מוצר 1': pair[0],
+                            'מוצר 2': pair[1],
+                            'מספר עסקאות משותפות': count,
+                            'אחוז מעסקאות מרובות': round(count / multi_trans * 100, 1)
+                        })
+
+                    pairs_df = pd.DataFrame(pairs_data)
+
+                    # Top pairs chart
+                    top_10_pairs = pairs_df.head(10).copy()
+                    top_10_pairs['זוג'] = top_10_pairs['מוצר 1'] + ' + ' + top_10_pairs['מוצר 2']
+
+                    fig_pairs = px.bar(
+                        top_10_pairs.sort_values('מספר עסקאות משותפות', ascending=True),
+                        x='מספר עסקאות משותפות',
+                        y='זוג',
+                        orientation='h',
+                        title='10 זוגות המוצרים הפופולריים ביותר',
+                        color='מספר עסקאות משותפות',
+                        color_continuous_scale='Greens',
+                        text='מספר עסקאות משותפות'
+                    )
+                    fig_pairs.update_traces(textposition='outside')
+                    fig_pairs.update_layout(height=500, yaxis_title='', xaxis_title='מספר עסקאות')
+                    st.plotly_chart(fig_pairs, use_container_width=True)
+
+                    # Pairs table
+                    st.markdown("#### 📋 טבלת זוגות מלאה")
+                    display_pairs = pairs_df.copy()
+                    display_pairs['אחוז מעסקאות מרובות'] = display_pairs['אחוז מעסקאות מרובות'].apply(lambda x: f"{x}%")
+                    st.dataframe(display_pairs, use_container_width=True, hide_index=True)
+
+                st.markdown("---")
+
+                # === FREQUENTLY BOUGHT WITH ===
+                st.markdown("### 🔗 לקוחות שקנו X קנו גם...")
+
+                # Get all unique products
+                all_products = set()
+                for t in transactions:
+                    for item in t['items']:
+                        all_products.add(item['name'])
+
+                selected_product = st.selectbox(
+                    "בחר מוצר:",
+                    options=sorted(all_products),
+                    key='basket_product_select'
+                )
+
+                if selected_product:
+                    # Find transactions containing this product
+                    related_trans = [t for t in multi_item_transactions
+                                    if any(item['name'] == selected_product for item in t['items'])]
+
+                    if related_trans:
+                        # Count other products in these transactions
+                        related_products = Counter()
+                        for t in related_trans:
+                            for item in t['items']:
+                                if item['name'] != selected_product:
+                                    related_products[item['name']] += 1
+
+                        top_related = related_products.most_common(10)
+
+                        if top_related:
+                            st.markdown(f"**מוצרים שנקנו יחד עם '{selected_product}':**")
+
+                            related_data = []
+                            for product, count in top_related:
+                                pct = count / len(related_trans) * 100
+                                related_data.append({
+                                    'מוצר': product,
+                                    'מספר פעמים': count,
+                                    'אחוז': pct
+                                })
+
+                            related_df = pd.DataFrame(related_data)
+
+                            fig_related = px.bar(
+                                related_df,
+                                x='מוצר',
+                                y='אחוז',
+                                title=f'מוצרים שנקנים עם "{selected_product}"',
+                                color='אחוז',
+                                color_continuous_scale='Blues',
+                                text='מספר פעמים'
+                            )
+                            fig_related.update_traces(texttemplate='%{text} פעמים', textposition='outside')
+                            fig_related.update_layout(yaxis_title='אחוז מהעסקאות (%)')
+                            st.plotly_chart(fig_related, use_container_width=True)
+                        else:
+                            st.info("לא נמצאו מוצרים קשורים")
+                    else:
+                        st.info(f"'{selected_product}' לא נקנה יחד עם מוצרים אחרים")
+
+                st.markdown("---")
+
+                # === BASKET SIZE ANALYSIS ===
+                st.markdown("### 📦 ניתוח גודל סל")
+
+                basket_sizes = [len(t['items']) for t in transactions]
+                basket_values = [t['total'] for t in transactions]
+
+                basket_analysis = []
+                for size in sorted(set(basket_sizes)):
+                    matching = [(s, v) for s, v in zip(basket_sizes, basket_values) if s == size]
+                    avg_value = sum(v for _, v in matching) / len(matching)
+                    basket_analysis.append({
+                        'גודל סל': size,
+                        'מספר עסקאות': len(matching),
+                        'ממוצע ערך': avg_value
+                    })
+
+                basket_df = pd.DataFrame(basket_analysis)
+
+                col_bs1, col_bs2 = st.columns(2)
+
+                with col_bs1:
+                    fig_size = px.bar(
+                        basket_df,
+                        x='גודל סל',
+                        y='מספר עסקאות',
+                        title='התפלגות גודל סל',
+                        color='מספר עסקאות',
+                        color_continuous_scale='Purples'
+                    )
+                    st.plotly_chart(fig_size, use_container_width=True)
+
+                with col_bs2:
+                    fig_value = px.bar(
+                        basket_df,
+                        x='גודל סל',
+                        y='ממוצע ערך',
+                        title='ערך ממוצע לפי גודל סל',
+                        color='ממוצע ערך',
+                        color_continuous_scale='Oranges',
+                        text='ממוצע ערך'
+                    )
+                    fig_value.update_traces(texttemplate='₪%{text:,.0f}', textposition='outside')
+                    fig_value.update_layout(yaxis_title='ערך ממוצע (₪)')
+                    st.plotly_chart(fig_value, use_container_width=True)
+
+                # === COMBO RECOMMENDATIONS ===
+                st.markdown("### 💡 המלצות לקומבינציות")
+
+                if top_pairs and len(top_pairs) >= 3:
+                    top_3_pairs = top_pairs[:3]
+
+                    st.success(f"""
+                    **קומבינציות מומלצות למבצעים:**
+                    
+                    1. 🥇 **{top_3_pairs[0][0][0]}** + **{top_3_pairs[0][0][1]}** ({top_3_pairs[0][1]} עסקאות משותפות)
+                    2. 🥈 **{top_3_pairs[1][0][0]}** + **{top_3_pairs[1][0][1]}** ({top_3_pairs[1][1]} עסקאות משותפות)
+                    3. 🥉 **{top_3_pairs[2][0][0]}** + **{top_3_pairs[2][0][1]}** ({top_3_pairs[2][1]} עסקאות משותפות)
+                    """)
+
+    # Tab 8: Achievements
+    with tab8:
+        st.markdown("## 🏆 לוח הישגים")
+        st.info("שיאים, הישגים ואבני דרך")
+
+        if not transactions:
+            st.warning("אין נתונים להצגה")
+        else:
+            all_trans_for_achievements = st.session_state.transactions
+
+            st.markdown("### 🎖️ שיאים אישיים")
+
+            # === REVENUE RECORDS ===
+            col_r1, col_r2, col_r3 = st.columns(3)
+
+            # Best day ever
+            daily_totals = {}
+            for t in all_trans_for_achievements:
+                date = t['date']
+                if date not in daily_totals:
+                    daily_totals[date] = 0
+                daily_totals[date] += t['total']
+
+            if daily_totals:
+                best_day = max(daily_totals.items(), key=lambda x: x[1])
+                worst_day = min(daily_totals.items(), key=lambda x: x[1])
+
+                with col_r1:
+                    st.metric(
+                        "🏆 יום המכירות הכי טוב",
+                        f"₪ {best_day[1]:,.0f}",
+                        delta=best_day[0].strftime('%d/%m/%Y')
+                    )
+
+                with col_r2:
+                    # Biggest single transaction
+                    biggest_trans = max(all_trans_for_achievements, key=lambda x: x['total'])
+                    st.metric(
+                        "💰 העסקה הגדולה ביותר",
+                        f"₪ {biggest_trans['total']:,.0f}",
+                        delta=f"הזמנה #{biggest_trans['order_id']}"
+                    )
+
+                with col_r3:
+                    # Most transactions in a day
+                    daily_trans_count = {}
+                    for t in all_trans_for_achievements:
+                        date = t['date']
+                        if date not in daily_trans_count:
+                            daily_trans_count[date] = 0
+                        daily_trans_count[date] += 1
+
+                    busiest_day = max(daily_trans_count.items(), key=lambda x: x[1])
+                    st.metric(
+                        "🔥 היום הכי עמוס",
+                        f"{busiest_day[1]} עסקאות",
+                        delta=busiest_day[0].strftime('%d/%m/%Y')
+                    )
+
+            st.markdown("---")
+
+            # === PRODUCT RECORDS ===
+            st.markdown("### 🥇 שיאי מוצרים")
+
+            col_p1, col_p2, col_p3 = st.columns(3)
+
+            # Best selling product (by quantity)
+            product_qty = {}
+            product_revenue = {}
+
+            for t in all_trans_for_achievements:
+                for item in t['items']:
+                    name = item['name']
+                    if name not in product_qty:
+                        product_qty[name] = 0
+                        product_revenue[name] = 0
+                    product_qty[name] += item['quantity']
+                    product_revenue[name] += item['total_price']
+
+            if product_qty:
+                top_qty_product = max(product_qty.items(), key=lambda x: x[1])
+                top_revenue_product = max(product_revenue.items(), key=lambda x: x[1])
+
+                with col_p1:
+                    st.metric(
+                        "📦 המוצר הנמכר ביותר (כמות)",
+                        top_qty_product[0][:20] + ('...' if len(top_qty_product[0]) > 20 else ''),
+                        delta=f"{top_qty_product[1]:,.0f} יחידות"
+                    )
+
+                with col_p2:
+                    st.metric(
+                        "💵 המוצר המכניס ביותר",
+                        top_revenue_product[0][:20] + ('...' if len(top_revenue_product[0]) > 20 else ''),
+                        delta=f"₪ {top_revenue_product[1]:,.0f}"
+                    )
+
+                with col_p3:
+                    # Unique products sold
+                    unique_products = len(product_qty)
+                    st.metric(
+                        "🎨 מגוון מוצרים שנמכרו",
+                        f"{unique_products} מוצרים",
+                        delta=None
+                    )
+
+            st.markdown("---")
+
+            # === STREAKS AND MILESTONES ===
+            st.markdown("### 🎯 אבני דרך")
+
+            total_revenue = sum(t['total'] for t in all_trans_for_achievements)
+            total_transactions = len(all_trans_for_achievements)
+            total_items = sum(len(t['items']) for t in all_trans_for_achievements)
+            total_days = len(daily_totals) if daily_totals else 0
+
+            # Milestone cards
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+
+            with col_m1:
+                milestone_revenue = (total_revenue // 10000) * 10000
+                next_milestone = milestone_revenue + 10000
+                progress = (total_revenue - milestone_revenue) / 10000 * 100
+                st.metric(
+                    "💰 אבן דרך הכנסות",
+                    f"₪ {milestone_revenue:,.0f}",
+                    delta=f"{progress:.0f}% ל-₪{next_milestone:,.0f}"
+                )
+
+            with col_m2:
+                milestone_trans = (total_transactions // 100) * 100
+                st.metric(
+                    "🧾 אבן דרך עסקאות",
+                    f"{milestone_trans:,}",
+                    delta=f"סה״כ: {total_transactions:,}"
+                )
+
+            with col_m3:
+                milestone_items = (total_items // 500) * 500
+                st.metric(
+                    "📦 אבן דרך פריטים",
+                    f"{milestone_items:,}",
+                    delta=f"סה״כ: {total_items:,}"
+                )
+
+            with col_m4:
+                st.metric(
+                    "📅 ימי פעילות",
+                    f"{total_days} ימים",
+                    delta=f"ממוצע: ₪{total_revenue/max(total_days,1):,.0f}/יום"
+                )
+
+            st.markdown("---")
+
+            # === ACHIEVEMENTS BADGES ===
+            st.markdown("### 🏅 תגי הישגים")
+
+            achievements = []
+
+            # Check achievements
+            if total_revenue >= 100000:
+                achievements.append(("💎", "מאה אלף", "הגעת ל-₪100,000 הכנסות!"))
+            if total_revenue >= 50000:
+                achievements.append(("🥇", "חמישים אלף", "הגעת ל-₪50,000 הכנסות!"))
+            if total_revenue >= 10000:
+                achievements.append(("🥈", "עשרת אלפים", "הגעת ל-₪10,000 הכנסות!"))
+
+            if total_transactions >= 1000:
+                achievements.append(("🔥", "אלף עסקאות", "ביצעת 1,000 עסקאות!"))
+            if total_transactions >= 500:
+                achievements.append(("⭐", "500 עסקאות", "ביצעת 500 עסקאות!"))
+            if total_transactions >= 100:
+                achievements.append(("✨", "100 עסקאות", "ביצעת 100 עסקאות!"))
+
+            if daily_totals:
+                if best_day[1] >= 10000:
+                    achievements.append(("🚀", "יום עשרת אלפים", f"יום עם ₪10,000+ ({best_day[0].strftime('%d/%m')})"))
+                if best_day[1] >= 5000:
+                    achievements.append(("💪", "יום חמשת אלפים", f"יום עם ₪5,000+ ({best_day[0].strftime('%d/%m')})"))
+
+            if len(product_qty) >= 50:
+                achievements.append(("🎨", "מגוון רחב", "מכרת 50+ מוצרים שונים!"))
+
+            if biggest_trans['total'] >= 500:
+                achievements.append(("👑", "עסקת VIP", f"עסקה של ₪500+ (#{biggest_trans['order_id']})"))
+
+            if achievements:
+                cols = st.columns(min(len(achievements), 4))
+                for i, (emoji, title, desc) in enumerate(achievements):
+                    with cols[i % 4]:
+                        st.markdown(f"""
+                        <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; margin: 5px;">
+                            <span style="font-size: 40px;">{emoji}</span>
+                            <h4 style="color: white; margin: 10px 0 5px 0;">{title}</h4>
+                            <p style="color: #e0e0e0; font-size: 12px; margin: 0;">{desc}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+            else:
+                st.info("המשך למכור כדי לפתוח הישגים! 🎮")
+
+            st.markdown("---")
+
+            # === LEADERBOARD ===
+            st.markdown("### 📊 לוח מובילים - ימים")
+
+            if daily_totals:
+                top_days = sorted(daily_totals.items(), key=lambda x: x[1], reverse=True)[:10]
+
+                leaderboard_data = []
+                for rank, (date, revenue) in enumerate(top_days, 1):
+                    medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"#{rank}"
+                    leaderboard_data.append({
+                        'דירוג': medal,
+                        'תאריך': date.strftime('%d/%m/%Y'),
+                        'יום': ['שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת', 'ראשון'][date.weekday()],
+                        'הכנסה': f"₪ {revenue:,.0f}",
+                        'עסקאות': daily_trans_count.get(date, 0)
+                    })
+
+                leaderboard_df = pd.DataFrame(leaderboard_data)
+                st.dataframe(leaderboard_df, use_container_width=True, hide_index=True)
+
+    # Tab 9: Download Reports
+    with tab9:
         st.markdown("### ⬇️ הורד דוחות")
         st.info(f"📅 תקופה: {start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}")
 
@@ -545,8 +1508,8 @@ else:
                 items_df.to_csv(index=False).encode('utf-8-sig'),
                 f"items_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv", "text/csv")
 
-    # Tab 6: Goals Dashboard
-    with tab6:
+    # Tab 10: Goals Dashboard
+    with tab10:
         st.markdown("## 🎯 יעדים")
 
         goal_tab1, goal_tab2 = st.tabs(["📊 סיכום תקופה", "📈 ניתוח שבועי"])
